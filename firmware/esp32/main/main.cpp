@@ -238,6 +238,7 @@ extern "C" void app_main(void) {
       lcd.miso = -1;  // the user chose: no auto-detection
     } else if (*v == "st7789") {
       lcd.controller = hgp::LcdController::St7789, lcd.bgr = false, lcd.invert = false;
+      lcd.mirror_y = !lcd.mirror_y;  // same orientation as auto-detection picks
       lcd.miso = -1;
     }  // anything else ("auto"): detect
   }
@@ -269,7 +270,7 @@ extern "C" void app_main(void) {
 
   hgp::diag::Parts parts;
   parts.display = hal.display == &g_display
-                      ? (board.lcd.controller == hgp::LcdController::Ili9341 ? "ili9341" : "st7789")
+                      ? (g_display.controller() == hgp::LcdController::Ili9341 ? "ili9341" : "st7789")
                       : hal.display == &g_amoled ? "co5300" : "none";
   parts.mic = hal.mic == &g_codec_mic ? "es7210" : hal.mic == &g_mic ? "i2s" : "none";
   parts.speaker = hal.speaker == &g_codec_speaker ? "es8311"

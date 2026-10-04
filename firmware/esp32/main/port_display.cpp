@@ -104,6 +104,9 @@ void detect_controller(spi_host_device_t host, LcdConfig& cfg) {
     cfg.controller = LcdController::St7789;
     cfg.invert = false;
     cfg.bgr = false;
+    // In landscape (swap_xy) the panel's row-address bit flips the image left
+    // to right; this panel needs it set to read correctly (confirmed on hardware).
+    cfg.mirror_y = !cfg.mirror_y;
     return;
   }
   ESP_LOGW(TAG, "panel ID not recognised; keeping the board's %s setting",
@@ -171,8 +174,8 @@ bool SpiDisplay::begin(const LcdConfig& cfg) {
   ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_));
   ESP_ERROR_CHECK(esp_lcd_panel_init(panel_));
   ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, c.invert));
-  ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_, cfg.swap_xy));
-  ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, cfg.mirror_x, cfg.mirror_y));
+  ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_, c.swap_xy));
+  ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, c.mirror_x, c.mirror_y));
   ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_, cfg.gap_x, cfg.gap_y));
   flush(0, fb_h_);  // clear whatever the panel powered up with
   ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_, true));

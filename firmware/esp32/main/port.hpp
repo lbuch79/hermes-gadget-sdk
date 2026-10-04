@@ -110,6 +110,7 @@ class SpiDisplay final : public hg::Display {
   uint16_t* framebuffer() override { return fb_; }
   void flush(uint16_t y0, uint16_t y1) override;
   void set_backlight(uint8_t percent) override;
+  LcdController controller() const { return cfg_.controller; }  // after auto-detection
 
  private:
   static bool on_trans_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t* edata, void* ctx);
