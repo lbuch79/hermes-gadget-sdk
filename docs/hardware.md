@@ -92,7 +92,7 @@ Board option `esp32-cyd`, for the ESP32-2432S028R ("CYD"): a classic ESP32-WROOM
 
 **Controls.** Hold the screen (or BOOT) to talk, tap to answer "yes", swipe down to cancel or answer "no". There are no scroll keys, so long replies turn their own pages.
 
-**Panel revisions.** The single-USB (micro-USB) 2432S028R carries an ILI9341. The later revision with USB-C *and* micro-USB ports often carries an ST7789 with inverted colours: if the screen looks like a photo negative, set `CONFIG_HG_CYD_ST7789=y` (menuconfig → Hermes Gadget → Cheap Yellow Display options). Turn `CONFIG_HG_CYD_MIC` off when no microphone is wired, so the device doesn't offer voice input.
+**Panel revisions.** The single-USB (micro-USB) 2432S028R carries an ILI9341. The revision with USB-C *and* micro-USB ports carries a panel that doesn't answer the ILI9341 ID (one tested board answers RDID1–3 with `81 81 B3`) and needs the ST7789 driver with inversion off. The driver reads the panel ID at boot over MISO (GPIO 12) and picks the right one by itself; the boot log says which. To force it, use the console: `set lcd_panel ili9341|st7789|auto`, and `set lcd_invert`, `lcd_bgr`, `lcd_mirror_x`, `lcd_mirror_y`, `lcd_swap_xy` (`on`/`off`) or `lcd_mhz <n>`, then restart. `CONFIG_HG_CYD_ST7789=y` makes ST7789 the build default. Turn `CONFIG_HG_CYD_MIC` off when no microphone is wired, so the device doesn't offer voice input.
 
 **Build and flash it** with PlatformIO. The board's USB port goes through a CH340 serial bridge (`/dev/ttyUSB0`; on Linux your user needs the `dialout` or `uucp` group):
 

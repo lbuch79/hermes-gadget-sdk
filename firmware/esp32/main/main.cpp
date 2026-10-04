@@ -229,7 +229,28 @@ extern "C" void app_main(void) {
   hal.transport = &g_transport;
   hal.storage = &g_storage;
   if (g_updater.capacity()) hal.updater = &g_updater;
-  if (board.lcd.enabled && g_display.begin(board.lcd)) hal.display = &g_display;
+  // Panel overrides from the console, for boards sold with more than one panel
+  // (the CYD): set lcd_panel ili9341|st7789, set lcd_invert on|off, set lcd_mhz 20.
+  hgp::LcdConfig lcd = board.lcd;
+  if (auto v = g_storage.get("lcd_panel")) {
+    if (*v == "ili9341") {
+      lcd.controller = hgp::LcdController::Ili9341, lcd.bgr = true, lcd.invert = false;
+      lcd.miso = -1;  // the user chose: no auto-detection
+    } else if (*v == "st7789") {
+      lcd.controller = hgp::LcdController::St7789, lcd.bgr = false, lcd.invert = false;
+      lcd.miso = -1;
+    }  // anything else ("auto"): detect
+  }
+  if (auto v = g_storage.get("lcd_invert")) lcd.invert = *v == "on";
+  if (auto v = g_storage.get("lcd_bgr")) lcd.bgr = *v == "on";
+  if (auto v = g_storage.get("lcd_mirror_x")) lcd.mirror_x = *v == "on";
+  if (auto v = g_storage.get("lcd_mirror_y")) lcd.mirror_y = *v == "on";
+  if (auto v = g_storage.get("lcd_swap_xy")) lcd.swap_xy = *v == "on";
+  if (auto v = g_storage.get("lcd_mhz")) {
+    int mhz = atoi(v->c_str());
+    if (mhz >= 1 && mhz <= 80) lcd.spi_mhz = mhz;
+  }
+  if (lcd.enabled && g_display.begin(lcd)) hal.display = &g_display;
   else if (board.amoled.enabled && g_amoled.begin(board.amoled)) hal.display = &g_amoled;
   if (board.mic.enabled && g_mic.begin(board.mic)) hal.mic = &g_mic;
   if (board.speaker.enabled && g_speaker.begin(board.speaker)) hal.speaker = &g_speaker;
@@ -274,6 +295,11 @@ extern "C" void app_main(void) {
   if (touch && touch_screen) {
     profile.touch_screen = true;
     profile.extra_settings = {"touch_cancel"};
+  }
+  if (board.lcd.enabled) {
+    for (const char* k : {"lcd_panel", "lcd_invert", "lcd_bgr", "lcd_mirror_x", "lcd_mirror_y", "lcd_swap_xy",
+                          "lcd_mhz"})
+      profile.extra_settings.push_back(k);
   }
   if (hal.mic == &g_codec_mic) profile.mic_rate = hgp::CodecAudio::kRate;
   if (hal.speaker == &g_codec_speaker) profile.speaker_rate = hgp::CodecAudio::kRate;

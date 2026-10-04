@@ -140,10 +140,11 @@ BoardConfig make() {
   b.lcd.mirror_y = false;
 #if CONFIG_HG_CYD_ST7789
   b.lcd.controller = LcdController::St7789;
-  b.lcd.invert = true;
+  b.lcd.invert = false;
   b.lcd.bgr = false;
-  b.lcd.mirror_x = true;
 #else
+  // The ILI9341 default; the driver reads the panel's ID at boot and switches
+  // to the ST7789 settings on the two-USB revision (port_display.cpp).
   b.lcd.controller = LcdController::Ili9341;
   b.lcd.invert = false;
   b.lcd.bgr = true;
@@ -154,6 +155,7 @@ BoardConfig make() {
   b.lcd.dc = 2;
   b.lcd.rst = -1;  // tied to EN
   b.lcd.backlight = 21;
+  b.lcd.miso = 12;  // read back the controller ID: ILI9341 or ST7789 revision
   b.lcd.spi_mhz = 40;
   b.lcd.fb_scale = 2;  // 160x120 framebuffer, pixel-doubled: there is no PSRAM
   b.lcd.spi_host = 1;  // SPI2_HOST

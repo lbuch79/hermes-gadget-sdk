@@ -27,6 +27,89 @@ const char* TAG = "hg.lcd";
 constexpr int kBounceRows = 20;  // panel rows per DMA transfer
 constexpr ledc_channel_t kBlChannel = LEDC_CHANNEL_0;
 
+// Reads `n` bytes after command `cmd` with CS and DC driven by hand, before
+// esp_lcd owns the bus. Returns false when nothing answers (MISO floats high).
+bool read_id(spi_host_device_t host, const LcdConfig& cfg, uint8_t cmd, uint8_t* out, size_t n) {
+  spi_device_interface_config_t dev = {};
+  dev.clock_speed_hz = 4 * 1000 * 1000;
+  dev.mode = 0;
+  dev.spics_io_num = -1;
+  dev.queue_size = 1;
+  spi_device_handle_t h = nullptr;
+  if (spi_bus_add_device(host, &dev, &h) != ESP_OK) return false;
+  gpio_reset_pin(static_cast<gpio_num_t>(cfg.cs));
+  gpio_set_direction(static_cast<gpio_num_t>(cfg.cs), GPIO_MODE_OUTPUT);
+  gpio_reset_pin(static_cast<gpio_num_t>(cfg.dc));
+  gpio_set_direction(static_cast<gpio_num_t>(cfg.dc), GPIO_MODE_OUTPUT);
+  gpio_set_level(static_cast<gpio_num_t>(cfg.cs), 0);
+  gpio_set_level(static_cast<gpio_num_t>(cfg.dc), 0);
+  spi_transaction_t t = {};
+  t.length = 8;
+  t.flags = SPI_TRANS_USE_TXDATA;
+  t.tx_data[0] = cmd;
+  spi_device_polling_transmit(h, &t);
+  gpio_set_level(static_cast<gpio_num_t>(cfg.dc), 1);
+  uint8_t tx[8] = {}, rx[8] = {};
+  if (n) {
+    spi_transaction_t r = {};
+    r.length = 8 * n;
+    r.tx_buffer = tx;
+    r.rx_buffer = rx;
+    spi_device_polling_transmit(h, &r);
+  }
+  gpio_set_level(static_cast<gpio_num_t>(cfg.cs), 1);
+  spi_bus_remove_device(h);
+  std::memcpy(out, rx, n);
+  bool all_ff = true, all_00 = true;
+  for (size_t i = 0; i < n; ++i) {
+    all_ff &= rx[i] == 0xFF;
+    all_00 &= rx[i] == 0x00;
+  }
+  return !all_ff && !all_00;
+}
+
+// Asks the panel what it is. Software-resets it first so it answers reads.
+// ILI9341: RDID4 (0xD3) = dummy, 0x00, 0x93, 0x41. ST7789: RDDID (0x04) =
+// 0x85 0x85 0x52 behind a one-clock dummy, so the bytes come shifted.
+void detect_controller(spi_host_device_t host, LcdConfig& cfg) {
+  if (cfg.miso < 0) return;
+  uint8_t none[1];
+  read_id(host, cfg, 0x01, none, 0);  // SWRESET
+  vTaskDelay(pdMS_TO_TICKS(150));
+  uint8_t d3[4] = {}, id[4] = {};
+  bool got_d3 = read_id(host, cfg, 0xD3, d3, 4);
+  bool got_id = read_id(host, cfg, 0x04, id, 4);
+  uint8_t da[2] = {}, db[2] = {}, dc[2] = {}, st[5] = {};
+  read_id(host, cfg, 0xDA, da, 2);
+  read_id(host, cfg, 0xDB, db, 2);
+  read_id(host, cfg, 0xDC, dc, 2);
+  read_id(host, cfg, 0x09, st, 5);
+  ESP_LOGI(TAG, "panel RDID1-3: %02x %02x | %02x %02x | %02x %02x; RDDST %02x %02x %02x %02x %02x", da[0], da[1],
+           db[0], db[1], dc[0], dc[1], st[0], st[1], st[2], st[3], st[4]);
+  ESP_LOGI(TAG, "panel ID: D3=%02x %02x %02x %02x, 04=%02x %02x %02x %02x", d3[0], d3[1], d3[2], d3[3], id[0],
+           id[1], id[2], id[3]);
+  if (got_d3 && d3[2] == 0x93 && d3[3] == 0x41) {
+    if (cfg.controller != LcdController::Ili9341) ESP_LOGW(TAG, "panel answers as an ILI9341; using that driver");
+    cfg.controller = LcdController::Ili9341;
+    return;
+  }
+  // Undo the dummy clock: shift the 32 bits left by one.
+  uint32_t v = (uint32_t(id[0]) << 24) | (uint32_t(id[1]) << 16) | (uint32_t(id[2]) << 8) | id[3];
+  uint32_t shifted = (v << 1) >> 8;
+  // An ILI9341 always answers RDID4 with 93 41. A panel that answers RDDID but
+  // not that is the ST7789 of the two-USB 2432S028 revision (seen answering
+  // RDID1-3 with 81 81 B3), which takes no inversion and the same orientation.
+  if (got_id || shifted == 0x858552) {
+    if (cfg.controller != LcdController::St7789) ESP_LOGW(TAG, "panel isn't an ILI9341; using the ST7789 driver");
+    cfg.controller = LcdController::St7789;
+    cfg.invert = false;
+    cfg.bgr = false;
+    return;
+  }
+  ESP_LOGW(TAG, "panel ID not recognised; keeping the board's %s setting",
+           cfg.controller == LcdController::Ili9341 ? "ILI9341" : "ST7789");
+}
+
 }  // namespace
 
 bool SpiDisplay::on_trans_done(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t*, void* ctx) {
@@ -55,12 +138,14 @@ bool SpiDisplay::begin(const LcdConfig& cfg) {
   const auto host = static_cast<spi_host_device_t>(cfg.spi_host);
   spi_bus_config_t bus = {};
   bus.mosi_io_num = cfg.mosi;
-  bus.miso_io_num = -1;
+  bus.miso_io_num = cfg.miso;
   bus.sclk_io_num = cfg.sclk;
   bus.quadwp_io_num = -1;
   bus.quadhd_io_num = -1;
   bus.max_transfer_sz = cfg.width * bounce_rows_ * 2;
   ESP_ERROR_CHECK(spi_bus_initialize(host, &bus, SPI_DMA_CH_AUTO));
+  detect_controller(host, cfg_);
+  const LcdConfig& c = cfg_;
 
   esp_lcd_panel_io_spi_config_t io_cfg = {};
   io_cfg.dc_gpio_num = static_cast<gpio_num_t>(cfg.dc);
@@ -76,21 +161,30 @@ bool SpiDisplay::begin(const LcdConfig& cfg) {
 
   esp_lcd_panel_dev_config_t panel_cfg = {};
   panel_cfg.reset_gpio_num = static_cast<gpio_num_t>(cfg.rst);
-  panel_cfg.rgb_ele_order = cfg.bgr ? LCD_RGB_ELEMENT_ORDER_BGR : LCD_RGB_ELEMENT_ORDER_RGB;
+  panel_cfg.rgb_ele_order = c.bgr ? LCD_RGB_ELEMENT_ORDER_BGR : LCD_RGB_ELEMENT_ORDER_RGB;
   panel_cfg.bits_per_pixel = 16;
-  if (cfg.controller == LcdController::Ili9341) {
+  if (c.controller == LcdController::Ili9341) {
     ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(io_, &panel_cfg, &panel_));
   } else {
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_, &panel_cfg, &panel_));
   }
   ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_));
   ESP_ERROR_CHECK(esp_lcd_panel_init(panel_));
-  ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, cfg.invert));
+  ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, c.invert));
   ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_, cfg.swap_xy));
   ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, cfg.mirror_x, cfg.mirror_y));
   ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_, cfg.gap_x, cfg.gap_y));
   flush(0, fb_h_);  // clear whatever the panel powered up with
   ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_, true));
+  if (c.miso >= 0) {
+    // RDDPM (0x0A): bit 7 booster on, bit 4 sleep out, bit 2 display on. Dummy byte first.
+    uint8_t pm[2] = {}, mad[2] = {}, pix[2] = {};
+    esp_lcd_panel_io_rx_param(io_, 0x0A, pm, 2);
+    esp_lcd_panel_io_rx_param(io_, 0x0B, mad, 2);
+    esp_lcd_panel_io_rx_param(io_, 0x0C, pix, 2);
+    ESP_LOGI(TAG, "after init: RDDPM %02x %02x, MADCTL %02x %02x, COLMOD %02x %02x", pm[0], pm[1], mad[0], mad[1],
+             pix[0], pix[1]);
+  }
 
   if (cfg.backlight >= 0) {
     ledc_timer_config_t timer = {};
@@ -110,7 +204,7 @@ bool SpiDisplay::begin(const LcdConfig& cfg) {
     set_backlight(100);
   }
   ESP_LOGI(TAG, "%s %ux%u ready (framebuffer %ux%u)",
-           cfg.controller == LcdController::Ili9341 ? "ILI9341" : "ST7789", cfg.width, cfg.height, fb_w_, fb_h_);
+           c.controller == LcdController::Ili9341 ? "ILI9341" : "ST7789", cfg.width, cfg.height, fb_w_, fb_h_);
   return true;
 }
 
