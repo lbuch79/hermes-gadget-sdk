@@ -14,6 +14,8 @@ namespace {
 #define HG_BOARD_NAME "esp32s3-touch-amoled-1.75"
 #elif CONFIG_HG_BOARD_WS_ESP32S3_LCD_154
 #define HG_BOARD_NAME "waveshare-esp32s3-lcd-154"
+#elif CONFIG_HG_BOARD_ESP32_CYD
+#define HG_BOARD_NAME "esp32-cyd-2432s028"
 #else
 #define HG_BOARD_NAME "custom"
 #endif
@@ -119,6 +121,60 @@ BoardConfig make() {
   b.buttons = {0, 4, -1, -1};
   b.talk_label = "BOOT";
   b.cancel_label = "PLUS";
+  return b;
+}
+#elif CONFIG_HG_BOARD_ESP32_CYD
+// ESP32-2432S028R "Cheap Yellow Display": classic ESP32-WROOM-32 (4 MB flash,
+// no PSRAM), 2.8" 320x240 ILI9341 on HSPI, XPT2046 resistive touch on its own
+// pins, SC8002B amplifier on DAC2 (GPIO26), RGB LED, light sensor, BOOT key.
+// No microphone on board: an INMP441 goes on the expansion pins (Kconfig).
+// Pins: docs/hardware.md#esp32-2432s028r-cheap-yellow-display
+BoardConfig make() {
+  BoardConfig b{};
+  b.name = kBoardName;
+  b.lcd.enabled = true;
+  b.lcd.width = 320;
+  b.lcd.height = 240;
+  b.lcd.swap_xy = true;  // landscape, USB port on the right
+  b.lcd.mirror_x = false;
+  b.lcd.mirror_y = false;
+#if CONFIG_HG_CYD_ST7789
+  b.lcd.controller = LcdController::St7789;
+  b.lcd.invert = true;
+  b.lcd.bgr = false;
+  b.lcd.mirror_x = true;
+#else
+  b.lcd.controller = LcdController::Ili9341;
+  b.lcd.invert = false;
+  b.lcd.bgr = true;
+#endif
+  b.lcd.mosi = 13;
+  b.lcd.sclk = 14;
+  b.lcd.cs = 15;
+  b.lcd.dc = 2;
+  b.lcd.rst = -1;  // tied to EN
+  b.lcd.backlight = 21;
+  b.lcd.spi_mhz = 40;
+  b.lcd.fb_scale = 2;  // 160x120 framebuffer, pixel-doubled: there is no PSRAM
+  b.lcd.spi_host = 1;  // SPI2_HOST
+  b.xpt.enabled = true;
+  b.xpt.sclk = 25;
+  b.xpt.mosi = 32;
+  b.xpt.miso = 39;
+  b.xpt.cs = 33;
+  b.xpt.irq = 36;
+  b.xpt.spi_host = 2;  // SPI3_HOST
+  b.xpt.width = 320;
+  b.xpt.height = 240;
+  b.dac = {true, 26};
+#if CONFIG_HG_CYD_MIC
+  b.mic = {true, /*sck*/ 22, /*ws*/ 27, /*sd*/ 35};
+#endif
+  b.rgb_led = {true, 4, 16, 17, true};
+  b.light_sensor = 34;
+  b.buttons = {0, -1, -1, -1};  // BOOT also works as TALK
+  b.talk_label = "BOOT";
+  b.cancel_label = "Swipe down";
   return b;
 }
 #elif CONFIG_HG_BOARD_CUSTOM

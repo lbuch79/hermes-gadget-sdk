@@ -50,6 +50,9 @@ BOARDS = {
     "sim-240x240": Board("sim-240x240", 240, 240, scroll_buttons=False),
     # A 1.75" round 466x466 AMOLED touch board (e.g. ESP32-S3-Touch-AMOLED-1.75): no scroll buttons.
     "sim-466x466-round": Board("sim-466x466-round", 466, 466, scroll_buttons=False, round=True, touch=True),
+    # The ESP32-2432S028R Cheap Yellow Display: a 320x240 touchscreen driven from
+    # a 160x120 framebuffer (no PSRAM), so the UI lays out at this size.
+    "sim-cyd": Board("sim-cyd", 160, 120, scroll_buttons=False, touch=True),
 }
 
 

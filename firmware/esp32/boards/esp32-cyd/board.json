@@ -1,0 +1,5 @@
+{
+  "title": "ESP32-2432S028R Cheap Yellow Display",
+  "summary": "Classic ESP32 with a 2.8\" 320x240 touchscreen and a speaker output. Wire an INMP441 microphone to talk to it.",
+  "docs": "docs/hardware.md#esp32-2432s028r-cheap-yellow-display"
+}
