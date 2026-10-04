@@ -110,6 +110,7 @@ class SpiDisplay final : public hg::Display {
   uint16_t* framebuffer() override { return fb_; }
   void flush(uint16_t y0, uint16_t y1) override;
   void set_backlight(uint8_t percent) override;
+  LcdController controller() const { return cfg_.controller; }  // after auto-detection
 
  private:
   static bool on_trans_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t* edata, void* ctx);
@@ -117,9 +118,51 @@ class SpiDisplay final : public hg::Display {
   esp_lcd_panel_io_handle_t io_ = nullptr;
   esp_lcd_panel_handle_t panel_ = nullptr;
   uint16_t* fb_ = nullptr;
-  uint16_t* bounce_ = nullptr;  // DMA-capable staging rows
+  uint16_t* bounce_ = nullptr;  // DMA-capable staging rows (panel resolution)
   int bounce_rows_ = 0;
+  int scale_ = 1;               // panel pixels per framebuffer pixel side
+  uint16_t fb_w_ = 0, fb_h_ = 0;
   SemaphoreHandle_t done_ = nullptr;
+};
+
+// XPT2046 resistive touch on its own SPI bus, polled from a task that posts
+// Touch events in panel pixels (hg::TouchGestures turns them into buttons).
+class XptTouch {
+ public:
+  bool begin(const XptTouchConfig& cfg);
+
+ private:
+  static void task(void* arg);
+  uint16_t read12(uint8_t command);
+  bool sample(TouchSample& out);
+  XptTouchConfig cfg_{};
+  void* dev_ = nullptr;  // spi_device_handle_t
+};
+
+// The ESP32's 8-bit DAC in DMA (continuous) mode feeding the board's analog
+// amplifier. Samples are converted to 8 bits as they are queued (so 1.5 s fits
+// in internal RAM) and upsampled in the writer task: the DAC's DMA clock can't
+// run below ~20 kHz.
+class DacSpeaker final : public hg::AudioOut {
+ public:
+  bool begin(const DacSpeakerConfig& cfg);
+  bool begin(uint32_t sample_rate) override;
+  void write(const int16_t* samples, size_t count) override;
+  void end() override;
+  void abort() override;
+  bool busy() const override;
+  void set_volume(uint8_t percent) override { volume_ = percent; }
+
+ private:
+  static void task(void* arg);
+  DacSpeakerConfig cfg_{};
+  void* dac_ = nullptr;  // dac_continuous_handle_t
+  StreamBufferHandle_t buffer_ = nullptr;
+  std::atomic<uint32_t> rate_{16000};
+  std::atomic<bool> open_{false};
+  std::atomic<bool> draining_{false};
+  std::atomic<bool> flush_{false};
+  std::atomic<uint8_t> volume_{70};
 };
 
 // I2S MEMS microphone: a reader task posts 20 ms PCM16 chunks while capturing.

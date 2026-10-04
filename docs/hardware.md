@@ -74,6 +74,41 @@ The USB-C port is the S3's own USB Serial/JTAG, so flashing and the serial conso
 4. **Speaker:** replies are clear and loud enough (`set volume 80`); no hiss between replies.
 5. **Buttons:** BOOT holds to talk, PLUS cancels, and holding PLUS for 2 s starts a new conversation.
 
+## ESP32-2432S028R Cheap Yellow Display
+
+Board option `esp32-cyd`, for the ESP32-2432S028R ("CYD"): a classic ESP32-WROOM-32 (dual core, 240 MHz, 4 MB flash, **no PSRAM**) with a 2.8" 320×240 ILI9341 panel, an XPT2046 resistive touchscreen, an SC8002B amplifier on the DAC, an RGB LED, a light sensor (LDR) and the BOOT key. The board has **no microphone**: wire an INMP441 to the expansion pins to talk to it. Without one it still shows replies, speaks them and takes cards and actions from the agent.
+
+| Part | Chip | Connection |
+|---|---|---|
+| Display | ILI9341, SPI (HSPI) | SCLK 14, MOSI 13, CS 15, DC 2, RST = EN, BL 21 (LEDC) |
+| Touch | XPT2046, SPI (VSPI) | SCLK 25, MOSI 32, MISO 39, CS 33, IRQ 36 |
+| Speaker | ESP32 DAC2 → SC8002B | GPIO 26 → **SPEAK** connector (JST 1.25 mm, 8 Ω speaker) |
+| RGB LED | common anode | R 4, G 16, B 17 (low = lit), the agent's `led.set` |
+| Light sensor | LDR divider | GPIO 34 (ADC1), reported as `light_pct` every 5 s |
+| Button | BOOT | GPIO 0: TALK |
+| Microphone (add-on) | INMP441 | SCK → GPIO 22 (CN1 / P3), WS → GPIO 27 (CN1), SD → GPIO 35 (P3), L/R → GND, VDD → 3V3 |
+
+**Memory.** Without PSRAM a 320×240 framebuffer (150 KB) doesn't fit next to Wi-Fi and TLS, so the display keeps a 160×120 framebuffer and doubles every pixel on its way to the panel (`LcdConfig::fb_scale`). The UI lays itself out for 160×120; try it with the `sim-cyd` simulator board. Agent images (`gadget_display` pictures) arrive at that size too. The speaker queues 8-bit samples (1.5 s in 24 KB) and the DAC runs at 32 kHz, upsampled from the 16 kHz stream.
+
+**Controls.** Hold the screen (or BOOT) to talk, tap to answer "yes", swipe down to cancel or answer "no". There are no scroll keys, so long replies turn their own pages.
+
+**Panel revisions.** The single-USB (micro-USB) 2432S028R carries an ILI9341. The revision with USB-C *and* micro-USB ports carries a panel that doesn't answer the ILI9341 ID (one tested board answers RDID1–3 with `81 81 B3`) and needs the ST7789 driver with inversion off. The driver reads the panel ID at boot over MISO (GPIO 12) and picks the right one by itself; the boot log says which. To force it, use the console: `set lcd_panel ili9341|st7789|auto`, and `set lcd_invert`, `lcd_bgr`, `lcd_mirror_x`, `lcd_mirror_y`, `lcd_swap_xy` (`on`/`off`) or `lcd_mhz <n>`, then restart. `CONFIG_HG_CYD_ST7789=y` makes ST7789 the build default. Turn `CONFIG_HG_CYD_MIC` off when no microphone is wired, so the device doesn't offer voice input.
+
+**Build and flash it** with PlatformIO. The board's USB port goes through a CH340 serial bridge (`/dev/ttyUSB0`; on Linux your user needs the `dialout` or `uucp` group):
+
+```bash
+cd firmware/esp32
+pio run -e esp32-cyd -t upload -t monitor
+```
+
+### First flash: what to check
+
+1. **Boot log:** `ILI9341 320x240 ready (framebuffer 160x120)`, `DAC speaker on GPIO26 ready`, `XPT2046 touch ready`, and about 150 KB of internal memory free.
+2. **Screen:** the mascot is upright, not mirrored, and the accents are amber, not blue. Mirrored: flip `mirror_x` in `board.cpp`. Blue accents: flip `bgr`. Negative colours: the ST7789 revision, see above.
+3. **Touch:** holding the screen shows the listening screen; a swipe down cancels. If a tap lands far from your finger, adjust `xpt.x_min/x_max/y_min/y_max` (the log prints the touch position at debug level, `log_level hg.xpt debug`).
+4. **Speaker:** replies are audible on an 8 Ω speaker at the SPEAK connector (`set volume 80`). The DAC is 8-bit, so expect clear but slightly lo-fi speech.
+5. **Microphone:** say something while holding the screen; the waves move with your voice and Hermes's transcript is right.
+
 ## ESP32-S3-Touch-AMOLED-1.75
 
 Board option `esp32s3-touch-amoled-175`, for Waveshare's all-in-one board: an ESP32-S3R8 (8 MB octal PSRAM) with 16 MB flash, a 1.75" 466×466 AMOLED, touch, two microphones, a speaker output, a battery charger and an optional case. Nothing needs wiring; plug a small 8 Ω speaker into the **SPK** connector to hear replies.

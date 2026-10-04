@@ -2,9 +2,11 @@
 // core (hg::App) and runs the app loop on the main task.
 #include "port.hpp"  // first: pulls in FreeRTOS.h ahead of task.h/queue.h
 
+#include <algorithm>
 #include <cstring>
 
 #include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_psram.h"
@@ -28,6 +30,8 @@ hgp::CodecMic g_codec_mic;
 hgp::CodecSpeaker g_codec_speaker;
 hgp::Buttons g_buttons;
 hgp::TouchInput g_touch;
+hgp::XptTouch g_xpt;
+hgp::DacSpeaker g_dac_speaker;
 hgp::Wifi g_wifi;
 hgp::EspUpdater g_updater;
 hg::TouchGestures* g_gestures = nullptr;
@@ -82,6 +86,79 @@ void add_status_led(hg::App& app, int gpio) {
     return true;
   };
   app.add_action(std::move(led));
+}
+
+// The CYD's common-anode RGB LED as "led.set": named colours or "off".
+void add_rgb_led(hg::App& app, const hgp::RgbLedConfig& cfg) {
+  if (!cfg.enabled) return;
+  for (int pin : {cfg.r, cfg.g, cfg.b}) {
+    gpio_reset_pin(static_cast<gpio_num_t>(pin));
+    gpio_set_direction(static_cast<gpio_num_t>(pin), GPIO_MODE_OUTPUT);
+    gpio_set_level(static_cast<gpio_num_t>(pin), cfg.active_low ? 1 : 0);
+  }
+  hg::Action led;
+  led.name = "led.set";
+  led.description =
+      "Set the gadget's RGB LED: red, green, blue, yellow, cyan, magenta, white, or off.";
+  hg::json::Value props = hg::json::Value::object();
+  hg::json::Value color = hg::json::Value::object();
+  hg::json::Value names = hg::json::Value::array();
+  for (const char* n : {"off", "red", "green", "blue", "yellow", "cyan", "magenta", "white"}) names.push(n);
+  color.set("type", "string").set("enum", names);
+  props.set("color", color);
+  hg::json::Value required = hg::json::Value::array();
+  required.push("color");
+  led.params.set("type", "object").set("properties", props).set("required", required);
+  led.handler = [cfg](const hg::json::Value& args, hg::json::Value& result, std::string& error) {
+    const std::string& c = args["color"].as_string();
+    struct Named {
+      const char* name;
+      bool r, g, b;
+    };
+    static constexpr Named kColors[] = {{"off", 0, 0, 0},    {"red", 1, 0, 0},     {"green", 0, 1, 0},
+                                        {"blue", 0, 0, 1},   {"yellow", 1, 1, 0},  {"cyan", 0, 1, 1},
+                                        {"magenta", 1, 0, 1}, {"white", 1, 1, 1}};
+    for (const auto& k : kColors) {
+      if (c != k.name) continue;
+      auto set = [&](int pin, bool on) { gpio_set_level(static_cast<gpio_num_t>(pin), on != cfg.active_low); };
+      set(cfg.r, k.r);
+      set(cfg.g, k.g);
+      set(cfg.b, k.b);
+      result.set("color", c);
+      return true;
+    }
+    error = "unknown colour '" + c + "'";
+    return false;
+  };
+  app.add_action(std::move(led));
+}
+
+// The CYD's light-dependent resistor on an ADC1 pin, reported as light_pct
+// (0 = dark, 100 = bright). The LDR pulls the pin low in light.
+adc_oneshot_unit_handle_t g_adc = nullptr;
+adc_channel_t g_light_channel;
+bool begin_light_sensor(int gpio) {
+  if (gpio < 0) return false;
+  adc_unit_t unit;
+  if (adc_oneshot_io_to_channel(gpio, &unit, &g_light_channel) != ESP_OK || unit != ADC_UNIT_1) return false;
+  adc_oneshot_unit_init_cfg_t unit_cfg = {};
+  unit_cfg.unit_id = ADC_UNIT_1;
+  if (adc_oneshot_new_unit(&unit_cfg, &g_adc) != ESP_OK) return false;
+  adc_oneshot_chan_cfg_t ch = {};
+  ch.atten = ADC_ATTEN_DB_0;  // the divider keeps the pin well under 1 V
+  ch.bitwidth = ADC_BITWIDTH_12;
+  return adc_oneshot_config_channel(g_adc, g_light_channel, &ch) == ESP_OK;
+}
+
+void poll_light_sensor(hg::App& app) {
+  static uint32_t next = 0;
+  if (!g_adc) return;
+  uint32_t now = g_system.now_ms();
+  if (static_cast<int32_t>(now - next) < 0) return;
+  next = now + 5000;
+  int raw = 0;
+  if (adc_oneshot_read(g_adc, g_light_channel, &raw) != ESP_OK) return;
+  app.set_sensor("light_pct", 100.0 - std::min(raw, 4095) * 100.0 / 4095.0);
 }
 
 void dispatch(hg::App& app, hgp::Event& ev) {
@@ -152,24 +229,55 @@ extern "C" void app_main(void) {
   hal.transport = &g_transport;
   hal.storage = &g_storage;
   if (g_updater.capacity()) hal.updater = &g_updater;
-  if (board.lcd.enabled && g_display.begin(board.lcd)) hal.display = &g_display;
+  // Panel overrides from the console, for boards sold with more than one panel
+  // (the CYD): set lcd_panel ili9341|st7789, set lcd_invert on|off, set lcd_mhz 20.
+  hgp::LcdConfig lcd = board.lcd;
+  if (auto v = g_storage.get("lcd_panel")) {
+    if (*v == "ili9341") {
+      lcd.controller = hgp::LcdController::Ili9341, lcd.bgr = true, lcd.invert = false;
+      lcd.miso = -1;  // the user chose: no auto-detection
+    } else if (*v == "st7789") {
+      lcd.controller = hgp::LcdController::St7789, lcd.bgr = false, lcd.invert = false;
+      lcd.mirror_y = !lcd.mirror_y;  // same orientation as auto-detection picks
+      lcd.miso = -1;
+    }  // anything else ("auto"): detect
+  }
+  if (auto v = g_storage.get("lcd_invert")) lcd.invert = *v == "on";
+  if (auto v = g_storage.get("lcd_bgr")) lcd.bgr = *v == "on";
+  if (auto v = g_storage.get("lcd_mirror_x")) lcd.mirror_x = *v == "on";
+  if (auto v = g_storage.get("lcd_mirror_y")) lcd.mirror_y = *v == "on";
+  if (auto v = g_storage.get("lcd_swap_xy")) lcd.swap_xy = *v == "on";
+  if (auto v = g_storage.get("lcd_mhz")) {
+    int mhz = atoi(v->c_str());
+    if (mhz >= 1 && mhz <= 80) lcd.spi_mhz = mhz;
+  }
+  if (lcd.enabled && g_display.begin(lcd)) hal.display = &g_display;
   else if (board.amoled.enabled && g_amoled.begin(board.amoled)) hal.display = &g_amoled;
   if (board.mic.enabled && g_mic.begin(board.mic)) hal.mic = &g_mic;
   if (board.speaker.enabled && g_speaker.begin(board.speaker)) hal.speaker = &g_speaker;
+  if (board.dac.enabled && g_dac_speaker.begin(board.dac)) hal.speaker = &g_dac_speaker;
   i2c_master_bus_handle_t i2c_bus = hgp::i2c::bus(board.i2c);
   if (board.codec.enabled && g_codec.begin(board.codec, i2c_bus)) {
     if (g_codec_mic.begin(g_codec.in())) hal.mic = &g_codec_mic;
     if (g_codec_speaker.begin(g_codec.out())) hal.speaker = &g_codec_speaker;
   }
   g_buttons.begin(board.buttons);
-  const bool touch = (board.touch.enabled || board.pwr_key.enabled) &&
-                     g_touch.begin(board.touch, board.pwr_key, i2c_bus);
+  const bool touch = ((board.touch.enabled || board.pwr_key.enabled) &&
+                      g_touch.begin(board.touch, board.pwr_key, i2c_bus)) ||
+                     (board.xpt.enabled && g_xpt.begin(board.xpt));
+  const bool touch_screen = board.touch.enabled || board.xpt.enabled;
+  begin_light_sensor(board.light_sensor);
 
   hgp::diag::Parts parts;
-  parts.display = hal.display == &g_display ? "st7789" : hal.display == &g_amoled ? "co5300" : "none";
+  parts.display = hal.display == &g_display
+                      ? (g_display.controller() == hgp::LcdController::Ili9341 ? "ili9341" : "st7789")
+                      : hal.display == &g_amoled ? "co5300" : "none";
   parts.mic = hal.mic == &g_codec_mic ? "es7210" : hal.mic == &g_mic ? "i2s" : "none";
-  parts.speaker = hal.speaker == &g_codec_speaker ? "es8311" : hal.speaker == &g_speaker ? "i2s" : "none";
-  parts.touch = touch && g_touch.has_touch();
+  parts.speaker = hal.speaker == &g_codec_speaker ? "es8311"
+                  : hal.speaker == &g_speaker     ? "i2s"
+                  : hal.speaker == &g_dac_speaker ? "dac"
+                                                  : "none";
+  parts.touch = touch && (g_touch.has_touch() || board.xpt.enabled);
   parts.key = touch && g_touch.has_key();
   parts.i2c = i2c_bus;
   hgp::diag::set_parts(parts);
@@ -185,9 +293,14 @@ extern "C" void app_main(void) {
   profile.has_scroll_buttons = board.buttons.up >= 0 && board.buttons.down >= 0;
   profile.talk_label = board.talk_label;
   profile.cancel_label = board.cancel_label;
-  if (touch && board.touch.enabled) {
+  if (touch && touch_screen) {
     profile.touch_screen = true;
     profile.extra_settings = {"touch_cancel"};
+  }
+  if (board.lcd.enabled) {
+    for (const char* k : {"lcd_panel", "lcd_invert", "lcd_bgr", "lcd_mirror_x", "lcd_mirror_y", "lcd_swap_xy",
+                          "lcd_mhz"})
+      profile.extra_settings.push_back(k);
   }
   if (hal.mic == &g_codec_mic) profile.mic_rate = hgp::CodecAudio::kRate;
   if (hal.speaker == &g_codec_speaker) profile.speaker_rate = hgp::CodecAudio::kRate;
@@ -197,6 +310,7 @@ extern "C" void app_main(void) {
   if (profile.touch_screen) g_gestures = &gestures;
   apply_touch_cancel();
   add_status_led(app, board.status_led);
+  add_rgb_led(app, board.rgb_led);
   app.on_setting_changed = [](std::string_view key) {
     if (key == "wifi_ssid" || key == "wifi_pass") g_wifi.reconfigure();
     if (key == "touch_cancel") apply_touch_cancel();
@@ -220,6 +334,7 @@ extern "C" void app_main(void) {
     }
     g_buttons.poll(app);
     if (g_gestures) g_gestures->tick(g_system.now_ms());
+    poll_light_sensor(app);
     app.tick();
   }
 }

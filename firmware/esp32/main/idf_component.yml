@@ -3,3 +3,5 @@ dependencies:
   espressif/esp_websocket_client: "^1.2.3"
   # ES8311 / ES7210 codecs on boards that use them
   espressif/esp_codec_dev: "~1.5"
+  # ILI9341 panels (the ESP32-2432S028R Cheap Yellow Display)
+  espressif/esp_lcd_ili9341: "^2.0.0"

@@ -11,13 +11,49 @@
 
 namespace hgp {
 
+enum class LcdController : uint8_t { St7789, Ili9341 };
+
 struct LcdConfig {
   bool enabled = false;
   uint16_t width = 320, height = 240;  // after rotation
   bool swap_xy = true, mirror_x = true, mirror_y = false, invert = true;
   int gap_x = 0, gap_y = 0;
   int mosi = -1, sclk = -1, cs = -1, dc = -1, rst = -1, backlight = -1;
+  int miso = -1;  // panel SDO, if wired: lets the driver read the controller's ID
   int spi_mhz = 40;
+  LcdController controller = LcdController::St7789;
+  bool bgr = false;  // panel wired BGR (most ILI9341 modules)
+  // Framebuffer pixels per panel pixel side. 2 keeps a quarter-size framebuffer
+  // (160x120 for a 320x240 panel) and doubles it on flush: boards without PSRAM
+  // can't hold a full 150 KB frame in internal RAM.
+  uint8_t fb_scale = 1;
+  int spi_host = 1;  // SPI2_HOST (HSPI on the ESP32)
+};
+
+// XPT2046 resistive touch controller on its own SPI bus. Raw readings are
+// mapped linearly from [raw_min, raw_max] to panel pixels after optional swap
+// and mirroring.
+struct XptTouchConfig {
+  bool enabled = false;
+  int mosi = -1, miso = -1, sclk = -1, cs = -1, irq = -1;
+  int spi_host = 2;  // SPI3_HOST (VSPI on the ESP32)
+  uint16_t width = 320, height = 240;  // panel pixels
+  uint16_t x_min = 200, x_max = 3700, y_min = 240, y_max = 3800;
+  bool swap_xy = false, mirror_x = false, mirror_y = false;
+  uint16_t pressure_min = 300;  // Z threshold for "touching"
+};
+
+// The ESP32's built-in 8-bit DAC feeding an analog amplifier (GPIO25 or GPIO26).
+struct DacSpeakerConfig {
+  bool enabled = false;
+  int gpio = 26;
+};
+
+// A common-anode RGB LED on three GPIOs (low = lit).
+struct RgbLedConfig {
+  bool enabled = false;
+  int r = -1, g = -1, b = -1;
+  bool active_low = true;
 };
 
 struct I2sMicConfig {
@@ -88,6 +124,10 @@ struct BoardConfig {
   CodecAudioConfig codec;
   TouchConfig touch;
   ExpanderKeyConfig pwr_key;
+  XptTouchConfig xpt;
+  DacSpeakerConfig dac;
+  RgbLedConfig rgb_led;
+  int light_sensor = -1;  // ADC1 GPIO of a light-dependent resistor, reported as light_pct
   int status_led = -1;
   const char* talk_label = "TALK";
   const char* cancel_label = "CANCEL";

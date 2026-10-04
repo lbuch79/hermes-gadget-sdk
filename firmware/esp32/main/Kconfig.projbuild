@@ -33,9 +33,31 @@ menu "Hermes Gadget"
             bool "Waveshare ESP32-S3-Touch-AMOLED-1.75 (round AMOLED, touch, codecs)"
         config HG_BOARD_WS_ESP32S3_LCD_154
             bool "Waveshare ESP32-S3-LCD-1.54 (ST7789 240x240, ES8311 + ES7210 codecs)"
+        config HG_BOARD_ESP32_CYD
+            bool "ESP32-2432S028R Cheap Yellow Display (ILI9341 + XPT2046, DAC speaker)"
         config HG_BOARD_CUSTOM
             bool "Custom pins (configure below)"
     endchoice
+
+    menu "Cheap Yellow Display options"
+        depends on HG_BOARD_ESP32_CYD
+
+        config HG_CYD_ST7789
+            bool "Panel is an ST7789 (the two-USB-port 2432S028 revision)"
+            default n
+            help
+                The original single-USB ESP32-2432S028R has an ILI9341. The later
+                revision with USB-C and micro-USB ports carries an ST7789 with
+                inverted colours; pick this if the screen looks like a negative.
+        config HG_CYD_MIC
+            bool "INMP441 microphone wired to the expansion pins"
+            default y
+            help
+                The board has no microphone. Wire an INMP441 (or another I2S MEMS
+                mic): SCK to GPIO22, WS to GPIO27 (both on CN1/P3), SD to GPIO35
+                (P3), L/R to GND, VDD to 3.3 V. Without one, replies are text and
+                speech only.
+    endmenu
 
     menu "Custom board pins"
         depends on HG_BOARD_CUSTOM
